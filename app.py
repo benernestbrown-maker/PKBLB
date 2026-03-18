@@ -2,9 +2,10 @@ import streamlit as st
 import pandas as pd
 import plotly.graph_objects as go
 from datetime import datetime, timedelta
+import numpy as np
 
-# 1. UI Architecture
-st.set_page_config(page_title="Ben's Intelligence Hub", layout="wide")
+# 1. UI Configuration
+st.set_page_config(page_title="Performance Command Centre", layout="wide")
 
 st.markdown("""
     <style>
@@ -14,32 +15,33 @@ st.markdown("""
     </style>
     """, unsafe_allow_html=True)
 
-# 2. Expert Data Connector
 CSV_URL = "https://docs.google.com/spreadsheets/d/e/2PACX-1vRcgV5PFrp4XmAcNn3cutN0PvxKoZGhTY8wc8NKp70wDdajdsrYPOfNWezEBCoX-wSJyGtHSDDMyqse/pub?output=csv"
 
 @st.cache_data(ttl=60)
 def load_and_clean():
-    # Load Daily Tracker (Skip spreadsheet headers)
     df = pd.read_csv(CSV_URL, skiprows=4)
     df.columns = [str(c).replace('\n', ' ').strip() for c in df.columns]
     
-    # Convert DATE and PURGE FUTURE ROWS
+    # Convert DATE and filter out future placeholder rows
     df['DATE'] = pd.to_datetime(df['DATE'], dayfirst=True, errors='coerce')
     df = df.dropna(subset=['DATE'])
-    
-    # This line kills the 'child scribble' by ignoring future dates
     df = df[df['DATE'] <= datetime.now()]
     
-    # Clean numeric columns
+    # Clean numeric columns with NaN safety
     metrics = ['BODYWEIGHT (kg)', 'STEPS', 'ENERGY LEVELS Scale 1-10', 'STRESS LEVELS Scale 1-10']
     for col in metrics:
         df[col] = pd.to_numeric(df[col].astype(str).str.replace(',', ''), errors='coerce')
+    
     return df
 
-def render_expert_chart(df, col, title, color, timeframe, is_bar=False):
+def render_chart(df, col, title, color, timeframe, is_bar=False):
+    # Filter for valid data only to prevent "block" visuals
     plot_df = df.dropna(subset=[col])
-    if plot_df.empty: return
     
+    if plot_df.empty:
+        st.warning(f"No data recorded for {title} in this timeframe.")
+        return
+
     fig = go.Figure()
     if is_bar:
         fig.add_trace(go.Bar(x=plot_df['DATE'], y=plot_df[col], marker_color=color, opacity=0.8))
@@ -49,7 +51,7 @@ def render_expert_chart(df, col, title, color, timeframe, is_bar=False):
                                  mode='lines+markers', marker=dict(size=8)))
     
     fig.update_layout(
-        template="plotly_dark", title=f"<b>{title}</b> ({timeframe})",
+        template="plotly_dark", title=f"<b>{title}</b>",
         height=400, margin=dict(l=10, r=10, t=50, b=10),
         hovermode="x unified", showlegend=False,
         xaxis=dict(showgrid=False), yaxis=dict(gridcolor='rgba(255,255,255,0.05)')
@@ -59,46 +61,55 @@ def render_expert_chart(df, col, title, color, timeframe, is_bar=False):
 try:
     full_df = load_and_clean()
     
-    # --- SIDEBAR: TIME CONTROLS ---
+    # --- SIDEBAR: TIME INTELLIGENCE ---
     st.sidebar.title("📈 Time Controls")
     time_choice = st.sidebar.selectbox(
         "Select Visual Window", 
         ["Week", "Month", "3 Months", "6 Months", "12 Months", "All Time"]
     )
     
-    # Logic for timeframes
-    latest_date = full_df['DATE'].max()
     windows = {"Week": 7, "Month": 30, "3 Months": 90, "6 Months": 180, "12 Months": 365, "All Time": 9999}
+    latest_date = full_df['DATE'].max()
     start_date = latest_date - timedelta(days=windows[time_choice])
     df_view = full_df[full_df['DATE'] >= start_date]
 
     # --- TOP ROW: HUD ---
     st.title("⚡ PERFORMANCE COMMAND CENTRE")
-    latest = full_df.dropna(subset=['BODYWEIGHT (kg)']).iloc[-1]
     
+    # Expert check for missing data in metrics
+    def get_latest(col):
+        valid = full_df.dropna(subset=[col])
+        return valid.iloc[-1][col] if not valid.empty else 0
+
     c1, c2, c3, c4 = st.columns(4)
-    c1.metric("Bodyweight", f"{latest['BODYWEIGHT (kg)']} kg")
     
-    steps = int(latest['STEPS']) if not pd.isna(latest['STEPS']) else 0
+    weight = get_latest('BODYWEIGHT (kg)')
+    c1.metric("Bodyweight", f"{weight} kg" if weight > 0 else "Pending")
+    
+    steps = int(get_latest('STEPS'))
     c2.metric("Latest Steps", f"{steps:,}", f"{steps - 12500} vs Goal")
-    c3.metric("Energy", f"{latest['ENERGY LEVELS Scale 1-10']}/10")
-    c4.metric("Stress", f"{latest['STRESS LEVELS Scale 1-10']}/10")
+    
+    energy = get_latest('ENERGY LEVELS Scale 1-10')
+    c3.metric("Energy", f"{int(energy)}/10" if energy > 0 else "No Data")
+    
+    stress = get_latest('STRESS LEVELS Scale 1-10')
+    c4.metric("Stress", f"{int(stress)}/10" if stress > 0 else "No Data")
 
     st.divider()
 
-    # --- THE DATA TABS ---
-    tab_weight, tab_activity, tab_bio = st.tabs(["📉 Composition", "🏃 Activity", "😴 Biofeedback"])
+    # --- TABS ---
+    tab_comp, tab_act, tab_bio = st.tabs(["📉 Composition", "🏃 Activity", "😴 Biofeedback"])
 
-    with tab_weight:
-        render_expert_chart(df_view, 'BODYWEIGHT (kg)', "Weight Trend", "#00ffcc", time_choice)
+    with tab_comp:
+        render_chart(df_view, 'BODYWEIGHT (kg)', "Weight Trend", "#00ffcc", time_choice)
         
-    with tab_activity:
-        render_expert_chart(df_view, 'STEPS', "Step Activity", "#FF4B4B", time_choice, is_bar=True)
+    with tab_act:
+        render_chart(df_view, 'STEPS', "Step Activity", "#FF4B4B", time_choice, is_bar=True)
         
     with tab_bio:
         col_e, col_s = st.columns(2)
-        with col_e: render_expert_chart(df_view, 'ENERGY LEVELS Scale 1-10', "Energy", "#FFEB3B", time_choice)
-        with col_s: render_expert_chart(df_view, 'STRESS LEVELS Scale 1-10', "Stress", "#FF9800", time_choice)
+        with col_e: render_chart(df_view, 'ENERGY LEVELS Scale 1-10', "Energy", "#FFEB3B", time_choice)
+        with col_s: render_chart(df_view, 'STRESS LEVELS Scale 1-10', "Stress", "#FF9800", time_choice)
 
 except Exception as e:
-    st.error(f"Waiting for Data Sync... Error: {e}")
+    st.error(f"Waiting for Data Sync... (Ensure Daily Tracker is Tab 1). Error: {e}")
