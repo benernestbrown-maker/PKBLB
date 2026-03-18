@@ -2,10 +2,9 @@ import streamlit as st
 import pandas as pd
 import plotly.graph_objects as go
 from datetime import datetime, timedelta
-import numpy as np
 
-# 1. UI Configuration
-st.set_page_config(page_title="Performance Command Centre", layout="wide")
+# 1. Expert UI Configuration
+st.set_page_config(page_title="Performance Intelligence Hub", layout="wide")
 
 st.markdown("""
     <style>
@@ -15,101 +14,109 @@ st.markdown("""
     </style>
     """, unsafe_allow_html=True)
 
-CSV_URL = "https://docs.google.com/spreadsheets/d/e/2PACX-1vRcgV5PFrp4XmAcNn3cutN0PvxKoZGhTY8wc8NKp70wDdajdsrYPOfNWezEBCoX-wSJyGtHSDDMyqse/pub?output=csv"
+# GIDs - Essential for Multi-Tab access
+TRACKER_GID = "0"
+OURA_GID = "1547806509"
+BASE_URL = "https://docs.google.com/spreadsheets/d/e/2PACX-1vRcgV5PFrp4XmAcNn3cutN0PvxKoZGhTY8wc8NKp70wDdajdsrYPOfNWezEBCoX-wSJyGtHSDDMyqse/pub?"
 
 @st.cache_data(ttl=60)
-def load_and_clean():
-    df = pd.read_csv(CSV_URL, skiprows=4)
+def fetch_performance_data():
+    # Fetch Daily Tracker
+    t_url = f"{BASE_URL}gid={TRACKER_GID}&single=true&output=csv"
+    df = pd.read_csv(t_url, skiprows=4)
     df.columns = [str(c).replace('\n', ' ').strip() for c in df.columns]
-    
-    # Convert DATE and filter out future placeholder rows
     df['DATE'] = pd.to_datetime(df['DATE'], dayfirst=True, errors='coerce')
     df = df.dropna(subset=['DATE'])
     df = df[df['DATE'] <= datetime.now()]
     
-    # Clean numeric columns with NaN safety
-    metrics = ['BODYWEIGHT (kg)', 'STEPS', 'ENERGY LEVELS Scale 1-10', 'STRESS LEVELS Scale 1-10']
-    for col in metrics:
+    # Clean Tracker Metrics
+    for col in ['BODYWEIGHT (kg)', 'STEPS']:
         df[col] = pd.to_numeric(df[col].astype(str).str.replace(',', ''), errors='coerce')
     
-    return df
-
-def render_chart(df, col, title, color, timeframe, is_bar=False):
-    # Filter for valid data only to prevent "block" visuals
-    plot_df = df.dropna(subset=[col])
+    # Fetch Oura Decisive Data
+    o_url = f"{BASE_URL}gid={OURA_GID}&single=true&output=csv"
+    oura = pd.read_csv(o_url)
+    oura.columns = [str(c).strip() for c in oura.columns]
+    oura['day'] = pd.to_datetime(oura['day'], errors='coerce')
     
-    if plot_df.empty:
-        st.warning(f"No data recorded for {title} in this timeframe.")
-        return
+    # Ensure Oura data is also capped at today
+    oura = oura[oura['day'] <= datetime.now()]
+    
+    return df, oura
 
+def render_decisive_chart(df, x_col, y_col, title, color, is_bar=False):
+    data = df.dropna(subset=[y_col])
+    if data.empty: return
+    
     fig = go.Figure()
     if is_bar:
-        fig.add_trace(go.Bar(x=plot_df['DATE'], y=plot_df[col], marker_color=color, opacity=0.8))
+        fig.add_trace(go.Bar(x=data[x_col], y=data[y_col], marker_color=color, opacity=0.8))
     else:
-        fig.add_trace(go.Scatter(x=plot_df['DATE'], y=plot_df[col], 
+        fig.add_trace(go.Scatter(x=data[x_col], y=data[y_col], 
                                  line=dict(color=color, width=4, shape='spline'),
                                  mode='lines+markers', marker=dict(size=8)))
     
     fig.update_layout(
         template="plotly_dark", title=f"<b>{title}</b>",
-        height=400, margin=dict(l=10, r=10, t=50, b=10),
+        height=350, margin=dict(l=10, r=10, t=50, b=10),
         hovermode="x unified", showlegend=False,
         xaxis=dict(showgrid=False), yaxis=dict(gridcolor='rgba(255,255,255,0.05)')
     )
     st.plotly_chart(fig, use_container_width=True)
 
 try:
-    full_df = load_and_clean()
+    df, oura = fetch_performance_data()
     
-    # --- SIDEBAR: TIME INTELLIGENCE ---
-    st.sidebar.title("📈 Time Controls")
+    # --- SIDEBAR: TIMELINE CONTROLS ---
+    st.sidebar.title("📈 Time Intelligence")
     time_choice = st.sidebar.selectbox(
         "Select Visual Window", 
         ["Week", "Month", "3 Months", "6 Months", "12 Months", "All Time"]
     )
     
     windows = {"Week": 7, "Month": 30, "3 Months": 90, "6 Months": 180, "12 Months": 365, "All Time": 9999}
-    latest_date = full_df['DATE'].max()
+    latest_date = df['DATE'].max()
     start_date = latest_date - timedelta(days=windows[time_choice])
-    df_view = full_df[full_df['DATE'] >= start_date]
+    
+    # Filtered Views
+    df_v = df[df['DATE'] >= start_date]
+    ou_v = oura[oura['day'] >= start_date]
 
-    # --- TOP ROW: HUD ---
     st.title("⚡ PERFORMANCE COMMAND CENTRE")
-    
-    # Expert check for missing data in metrics
-    def get_latest(col):
-        valid = full_df.dropna(subset=[col])
-        return valid.iloc[-1][col] if not valid.empty else 0
 
-    c1, c2, c3, c4 = st.columns(4)
-    
-    weight = get_latest('BODYWEIGHT (kg)')
-    c1.metric("Bodyweight", f"{weight} kg" if weight > 0 else "Pending")
-    
-    steps = int(get_latest('STEPS'))
-    c2.metric("Latest Steps", f"{steps:,}", f"{steps - 12500} vs Goal")
-    
-    energy = get_latest('ENERGY LEVELS Scale 1-10')
-    c3.metric("Energy", f"{int(energy)}/10" if energy > 0 else "No Data")
-    
-    stress = get_latest('STRESS LEVELS Scale 1-10')
-    c4.metric("Stress", f"{int(stress)}/10" if stress > 0 else "No Data")
+    # --- TABS: DECISIVE DATA ONLY ---
+    t_over, t_comp, t_rec, t_time = st.tabs(["📊 Key Vitals", "📉 Composition", "😴 Oura Recovery", "📅 Master Timeline"])
 
-    st.divider()
-
-    # --- TABS ---
-    tab_comp, tab_act, tab_bio = st.tabs(["📉 Composition", "🏃 Activity", "😴 Biofeedback"])
-
-    with tab_comp:
-        render_chart(df_view, 'BODYWEIGHT (kg)', "Weight Trend", "#00ffcc", time_choice)
+    with t_over:
+        latest_w = df.dropna(subset=['BODYWEIGHT (kg)']).iloc[-1]
+        latest_o = oura.dropna(subset=['readiness_score']).iloc[-1]
         
-    with tab_act:
-        render_chart(df_view, 'STEPS', "Step Activity", "#FF4B4B", time_choice, is_bar=True)
+        c1, c2, c3, c4 = st.columns(4)
+        c1.metric("Weight", f"{latest_w['BODYWEIGHT (kg)']} kg")
         
-    with tab_bio:
-        col_e, col_s = st.columns(2)
-        with col_e: render_chart(df_view, 'ENERGY LEVELS Scale 1-10', "Energy", "#FFEB3B", time_choice)
-        with col_s: render_chart(df_view, 'STRESS LEVELS Scale 1-10', "Stress", "#FF9800", time_choice)
+        s_val = int(latest_w['STEPS']) if not pd.isna(latest_w['STEPS']) else 0
+        c2.metric("Steps", f"{s_val:,}", f"{s_val - 12500} vs Goal")
+        
+        c3.metric("Oura Readiness", f"{int(latest_o['readiness_score'])}")
+        c4.metric("Sleep Score", f"{int(latest_o['score_sleep'])}")
+        
+        st.divider()
+        render_decisive_chart(df_v, 'DATE', 'BODYWEIGHT (kg)', "Weight Trend", "#00ffcc")
+
+    with t_comp:
+        render_decisive_chart(df_v, 'DATE', 'BODYWEIGHT (kg)', "Bodyweight (kg)", "#00ffcc")
+        st.info("💡 Decisive InBody Metrics (BF%/Muscle) will be mapped here next.")
+
+    with t_rec:
+        render_decisive_chart(ou_v, 'day', 'average_hrv', "Heart Rate Variability (HRV)", "#00ffcc")
+        render_decisive_chart(ou_v, 'readiness_score', "Oura Readiness Score", "#FF4B4B")
+        render_decisive_chart(ou_v, 'score_sleep', "Oura Sleep Score", "#9C27B0")
+
+    with t_time:
+        st.subheader("Full Performance Timeline")
+        render_decisive_chart(df_v, 'DATE', 'STEPS', "Daily Activity (Steps)", "#FF4B4B", is_bar=True)
+        render_decisive_chart(ou_v, 'day', 'average_hrv', "Recovery Trend (HRV)", "#00ffcc")
+        render_decisive_chart(ou_v, 'day', 'score_sleep', "Sleep Quality Trend", "#9C27B0")
 
 except Exception as e:
-    st.error(f"Waiting for Data Sync... (Ensure Daily Tracker is Tab 1). Error: {e}")
+    st.error(f"Intelligence Module Error: {e}")
