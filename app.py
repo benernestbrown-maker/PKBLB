@@ -11,6 +11,8 @@ st.markdown("""
     .main { background-color: #0e1117; }
     div[data-testid="stMetricValue"] { color: #00ffcc; font-size: 2.2rem; font-weight: 800; }
     .stPlotlyChart { border: 1px solid #30363d; border-radius: 12px; background-color: #161b22; padding: 10px; }
+    /* Style the radio buttons to look like a sleek toggle menu */
+    div.row-widget.stRadio > div{flex-direction:row; justify-content: center;}
     </style>
     """, unsafe_allow_html=True)
 
@@ -35,21 +37,15 @@ def fetch_all_data():
     def get_phases(gid):
         url = f"{BASE_URL}gid={gid}&single=true&output=csv"
         try:
-            # Load raw to target exact cells: Row 8 to 59, Column D (index 3)
             df = pd.read_csv(url, header=None)
             raw_phases = df.iloc[7:59, 3].tolist() 
-            
-            dates = []
-            phases = []
+            dates, phases = [], []
             start_date = pd.to_datetime("2025-06-23")
-            
             for i, val in enumerate(raw_phases):
                 val_str = str(val).strip()
-                # Skip the header if it literally says 'phase', ignore blanks
-                if val_str.lower() != 'phase' and val_str.lower() != 'nan' and val_str != '':
+                if val_str.lower() not in ['phase', 'nan', '']:
                     dates.append(start_date + timedelta(days=7*i))
                     phases.append(val_str)
-                    
             return pd.DataFrame({'Week_Start': dates, 'Phase': phases})
         except: return pd.DataFrame()
 
@@ -82,12 +78,10 @@ def fetch_all_data():
         inbody[i_date] = pd.to_datetime(inbody[i_date], dayfirst=True, errors='coerce')
         inbody = inbody.dropna(subset=[i_date]).sort_values(i_date)
 
-    # --- TIMELINE PHASES ---
     phase_df = get_phases(TIMELINE_GID)
-
     return df, oura, inbody, phase_df, t_date, o_date, i_date
 
-def build_pro_chart(data, x_col, y_cols, title, colors=['#00ffcc', '#FF4B4B', '#9C27B0', '#FFEB3B']):
+def build_pro_chart(data, x_col, y_cols, title, colors=['#00ffcc', '#FF4B4B', '#9C27B0', '#FFEB3B'], is_bar=False):
     fig = go.Figure()
     actual_cols = []
     for target in y_cols:
@@ -97,11 +91,14 @@ def build_pro_chart(data, x_col, y_cols, title, colors=['#00ffcc', '#FF4B4B', '#
     for i, col in enumerate(actual_cols):
         clean = data.dropna(subset=[col])
         if clean.empty: continue
-        fig.add_trace(go.Scatter(x=clean[x_col], y=clean[col], name=col.split('_')[0].title(),
-                                 line=dict(color=colors[i%len(colors)], width=3, shape='spline'),
-                                 mode='lines+markers'))
+        
+        if is_bar:
+            fig.add_trace(go.Bar(x=clean[x_col], y=clean[col], name=col.split('_')[0].title(), marker_color=colors[i%len(colors)]))
+        else:
+            fig.add_trace(go.Scatter(x=clean[x_col], y=clean[col], name=col.split('_')[0].title(),
+                                     line=dict(color=colors[i%len(colors)], width=3, shape='spline'), mode='lines+markers'))
     
-    fig.update_layout(template="plotly_dark", title=f"<b>{title}</b>", height=450, 
+    fig.update_layout(template="plotly_dark", title=f"<b>{title}</b>", height=400, 
                       hovermode="x unified", legend=dict(orientation="h", y=1.1))
     st.plotly_chart(fig, use_container_width=True)
 
@@ -110,28 +107,33 @@ try:
     
     st.sidebar.title("🎛️ Controls")
     
-    # --- PHASE FILTER ---
+    # PHASE FILTER
     active_phase = "All Phases"
     if not phase_df.empty:
         phase_options = ["All Phases"] + phase_df['Phase'].unique().tolist()
         active_phase = st.sidebar.selectbox("Filter by Phase", phase_options)
 
-    # --- TIME WINDOW ---
+    # TIME WINDOW (Anchored to actual data, not just "today")
     time_choice = st.sidebar.selectbox("Window", ["Week", "Month", "3 Months", "6 Months", "All Time"])
     windows = {"Week": 7, "Month": 30, "3 Months": 90, "6 Months": 180, "All Time": 9999}
-    start_date = datetime.now() - timedelta(days=windows[time_choice])
     
-    # 1. Apply Time Filter
+    # Safely find the absolute latest date recorded to anchor the lookback window
+    max_dates = []
+    if t_date and not df.empty: max_dates.append(df[t_date].max())
+    if o_date and not oura.empty: max_dates.append(oura[o_date].max())
+    latest_anchor = max(max_dates) if max_dates else datetime.now()
+    start_date = latest_anchor - timedelta(days=windows[time_choice])
+    
+    # Apply Time Filter
     df_v = df[df[t_date] >= start_date] if t_date and not df.empty else pd.DataFrame()
     ou_v = oura[oura[o_date] >= start_date] if o_date and not oura.empty else pd.DataFrame()
     ib_v = inbody[inbody[i_date] >= start_date] if i_date and not inbody.empty else pd.DataFrame()
 
-    # 2. Apply Phase Filter (If not 'All Phases')
+    # Apply Phase Filter
     if active_phase != "All Phases" and not phase_df.empty:
         valid_weeks = phase_df[phase_df['Phase'] == active_phase]
         valid_dates = set()
         for _, row in valid_weeks.iterrows():
-            # Add all 7 days of the valid week to the set
             valid_dates.update([(row['Week_Start'] + timedelta(days=i)).date() for i in range(7)])
             
         if not df_v.empty: df_v = df_v[df_v[t_date].dt.date.isin(valid_dates)]
@@ -146,7 +148,7 @@ try:
     with tabs[0]:
         c1, c2, c3, c4 = st.columns(4)
         
-        # Expert Average Calculations
+        # Calculate Averages for the HUD
         if not df_v.empty and 'BODYWEIGHT (kg)' in df_v.columns:
             avg_w = df_v['BODYWEIGHT (kg)'].dropna().mean()
             if pd.notna(avg_w): c1.metric("Avg Weight", f"{avg_w:.1f} kg")
@@ -155,19 +157,32 @@ try:
             avg_s = df_v['STEPS_CLEAN'].dropna().mean()
             if pd.notna(avg_s): c2.metric("Avg Steps", f"{int(avg_s):,}")
         
+        hrv_k, readi_k = None, None
         if not ou_v.empty:
             hrv_k = next((c for c in ou_v.columns if 'hrv' in c.lower()), None)
             readi_k = next((c for c in ou_v.columns if 'readiness' in c.lower()), None)
-            
             if hrv_k:
                 avg_hrv = ou_v[hrv_k].dropna().mean()
                 if pd.notna(avg_hrv): c3.metric("Avg HRV", f"{int(avg_hrv)}ms")
-            
             if readi_k:
                 avg_readi = ou_v[readi_k].dropna().mean()
                 if pd.notna(avg_readi): c4.metric("Avg Readiness", f"{int(avg_readi)}")
         
-        build_pro_chart(df_v, t_date, ['BODYWEIGHT (kg)'], "Weight Trend")
+        st.divider()
+        
+        # THE INTERACTIVE GRAPH TOGGLE
+        chart_choice = st.radio("Select Trend to Display:", ["Weight", "Steps", "HRV", "Readiness"], horizontal=True)
+        
+        if chart_choice == "Weight":
+            build_pro_chart(df_v, t_date, ['BODYWEIGHT (kg)'], "Weight Trend", ['#00ffcc'])
+        elif chart_choice == "Steps":
+            build_pro_chart(df_v, t_date, ['STEPS_CLEAN'], "Activity Trend", ['#FF4B4B'], is_bar=True)
+        elif chart_choice == "HRV":
+            if hrv_k and not ou_v.empty: build_pro_chart(ou_v, o_date, [hrv_k], "HRV Trend", ['#9C27B0'])
+            else: st.info("No HRV data available for this window.")
+        elif chart_choice == "Readiness":
+            if readi_k and not ou_v.empty: build_pro_chart(ou_v, o_date, [readi_k], "Readiness Trend", ['#FFEB3B'])
+            else: st.info("No Readiness data available for this window.")
 
     with tabs[1]:
         st.subheader("InBody Decisive Analysis")
@@ -181,7 +196,6 @@ try:
     with tabs[2]:
         st.subheader("Amalgamated Recovery")
         build_pro_chart(ou_v, o_date, ['readiness', 'sleep_score', 'hrv'], "Readiness vs Sleep vs HRV")
-        
         st.divider()
         st.subheader("Decisive Strain Markers")
         build_pro_chart(ou_v, o_date, ['heart_rate', 'temperature_deviation'], "RHR & Temp Deviation")
