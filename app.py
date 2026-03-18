@@ -17,7 +17,7 @@ st.markdown("""
 # GIDs - UPDATE THESE IF DATA IS MISSING
 TRACKER_GID = "0"
 OURA_GID = "1547806509"
-INBODY_GID = "1795026937" 
+INBODY_GID = "686934394" 
 
 BASE_URL = "https://docs.google.com/spreadsheets/d/e/2PACX-1vRcgV5PFrp4XmAcNn3cutN0PvxKoZGhTY8wc8NKp70wDdajdsrYPOfNWezEBCoX-wSJyGtHSDDMyqse/pub?"
 
