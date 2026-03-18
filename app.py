@@ -31,52 +31,49 @@ def fetch_all_data():
             return df
         except: return pd.DataFrame()
 
-    # --- TRACKER CLEANING (Column S specific) ---
+    # --- TRACKER: Sort & Clean Column S ---
     df = get_df_smart(TRACKER_GID, 4)
     t_date = next((c for c in df.columns if 'DATE' in c.upper()), None)
-    
     if t_date and not df.empty:
         df[t_date] = pd.to_datetime(df[t_date], dayfirst=True, errors='coerce')
-        df = df.dropna(subset=[t_date])
+        df = df.dropna(subset=[t_date]).sort_values(t_date)
         df = df[df[t_date] <= datetime.now()]
         
-        # Clean Bodyweight
-        df['BODYWEIGHT (kg)'] = pd.to_numeric(df.get('BODYWEIGHT (kg)', 0), errors='coerce')
-        
-        # Clean STEPS (Column S) - The "Dirty Data" Fix
-        # 1. Find the column (S is usually index 18)
-        step_col = next((c for c in df.columns if 'STEPS' in c.upper()), df.columns[18] if len(df.columns) > 18 else None)
-        if step_col:
-            # Remove repeating "STEPS" text and commas
-            df[step_col] = df[step_col].astype(str).str.replace('STEPS', '', case=False)
-            df[step_col] = df[step_col].str.replace(',', '')
-            df['STEPS_CLEAN'] = pd.to_numeric(df[step_col], errors='coerce')
+        # Clean Steps (Column S) and Bodyweight
+        step_col = next((c for c in df.columns if 'STEPS' in c.upper()), df.columns[18] if len(df.columns) > 18 else df.columns[-1])
+        df['STEPS_CLEAN'] = pd.to_numeric(df[step_col].astype(str).str.replace('STEPS', '', case=False).str.replace(',', ''), errors='coerce')
+        df['BODYWEIGHT (kg)'] = pd.to_numeric(df['BODYWEIGHT (kg)'], errors='coerce')
 
-    # --- OURA CLEANING ---
+    # --- OURA: Sort to Kill Scribbles ---
     oura = get_df_smart(OURA_GID, 0)
     o_date = None
     if not oura.empty:
-        o_date = next((c for c in oura.columns if 'DAY' in c.lower()), oura.columns[0])
+        o_date = next((c for c in oura.columns if 'DAY' in c.lower() or 'DATE' in c.upper()), oura.columns[0])
         oura[o_date] = pd.to_datetime(oura[o_date], errors='coerce')
-        oura = oura.dropna(subset=[o_date])
+        oura = oura.dropna(subset=[o_date]).sort_values(o_date)
+        oura = oura[oura[o_date] <= datetime.now()]
 
-    # --- INBODY CLEANING ---
+    # --- INBODY ---
     inbody = get_df_smart(INBODY_GID, 2)
     i_date = None
     if not inbody.empty:
         i_date = next((c for c in inbody.columns if 'DATE' in c.upper()), inbody.columns[0])
         inbody[i_date] = pd.to_datetime(inbody[i_date], dayfirst=True, errors='coerce')
+        inbody = inbody.dropna(subset=[i_date]).sort_values(i_date)
 
     return df, oura, inbody, t_date, o_date, i_date
 
-def build_master_chart(data, x_col, y_cols, title, colors=['#00ffcc', '#FF4B4B', '#9C27B0']):
+def build_pro_chart(data, x_col, y_cols, title, colors=['#00ffcc', '#FF4B4B', '#9C27B0', '#FFEB3B']):
     fig = go.Figure()
-    actual_cols = [c for c in y_cols if c in data.columns]
-    if not actual_cols: return
+    actual_cols = []
+    for target in y_cols:
+        match = next((c for c in data.columns if target.lower() in c.lower()), None)
+        if match: actual_cols.append(match)
     
     for i, col in enumerate(actual_cols):
         clean = data.dropna(subset=[col])
-        fig.add_trace(go.Scatter(x=clean[x_col], y=clean[col], name=col.replace('_CLEAN','').title(),
+        if clean.empty: continue
+        fig.add_trace(go.Scatter(x=clean[x_col], y=clean[col], name=col.split('_')[0].title(),
                                  line=dict(color=colors[i%len(colors)], width=3, shape='spline'),
                                  mode='lines+markers'))
     
@@ -87,63 +84,74 @@ def build_master_chart(data, x_col, y_cols, title, colors=['#00ffcc', '#FF4B4B',
 try:
     df, oura, inbody, t_date, o_date, i_date = fetch_all_data()
     
-    st.sidebar.title("🎛️ Hub Controls")
+    st.sidebar.title("🎛️ Controls")
     time_choice = st.sidebar.selectbox("Window", ["Week", "Month", "3 Months", "All Time"])
     windows = {"Week": 7, "Month": 30, "3 Months": 90, "All Time": 9999}
     
-    start_date = df[t_date].max() - timedelta(days=windows[time_choice])
-    df_v = df[df[t_date] >= start_date]
-    ou_v = oura[oura[o_date] >= start_date] if not oura.empty else pd.DataFrame()
-    ib_v = inbody[inbody[i_date] >= start_date] if not inbody.empty else pd.DataFrame()
+    # Logic: Use the current date as reference to ensure window works even if logging is late
+    start_date = datetime.now() - timedelta(days=windows[time_choice])
+    
+    # Safety Check: Prevent crash if t_date/o_date/i_date is missing
+    df_v = df[df[t_date] >= start_date] if t_date and not df.empty else pd.DataFrame()
+    ou_v = oura[oura[o_date] >= start_date] if o_date and not oura.empty else pd.DataFrame()
+    ib_v = inbody[inbody[i_date] >= start_date] if i_date and not inbody.empty else pd.DataFrame()
 
     st.title("⚡ BEN'S PERFORMANCE HUB")
-
     tabs = st.tabs(["📊 Vitals", "📉 Composition", "😴 Oura Recovery", "📅 Timeline"])
 
     with tabs[0]:
-        latest = df.dropna(subset=['BODYWEIGHT (kg)']).iloc[-1]
+        v_weight = df.dropna(subset=['BODYWEIGHT (kg)'])
+        v_steps = df.dropna(subset=['STEPS_CLEAN'])
+        
         c1, c2, c3, c4 = st.columns(4)
-        c1.metric("Weight", f"{latest['BODYWEIGHT (kg)']} kg")
-        s_val = int(latest['STEPS_CLEAN']) if not pd.isna(latest['STEPS_CLEAN']) else 0
-        c2.metric("Steps", f"{s_val:,}", f"{s_val - 12500}")
+        if not v_weight.empty: c1.metric("Weight", f"{v_weight.iloc[-1]['BODYWEIGHT (kg)']} kg")
+        if not v_steps.empty: c2.metric("Steps", f"{int(v_steps.iloc[-1]['STEPS_CLEAN']):,}")
         
         if not ou_v.empty:
-            lo = ou_v.iloc[-1]
             hrv_k = next((c for c in ou_v.columns if 'hrv' in c.lower()), None)
-            if hrv_k: c3.metric("HRV", f"{int(lo[hrv_k])}ms")
             readi_k = next((c for c in ou_v.columns if 'readiness' in c.lower()), None)
-            if readi_k: c4.metric("Readiness", f"{int(lo[readi_k])}")
-
-        build_master_chart(df_v, t_date, ['BODYWEIGHT (kg)'], "Amalgamated Weight Trend")
+            
+            # Robust Check to prevent int(NaN) crash
+            if hrv_k:
+                valid_hrv = ou_v.dropna(subset=[hrv_k])
+                if not valid_hrv.empty: c3.metric("HRV", f"{int(valid_hrv.iloc[-1][hrv_k])}ms")
+            
+            if readi_k:
+                valid_readi = ou_v.dropna(subset=[readi_k])
+                if not valid_readi.empty: c4.metric("Readiness", f"{int(valid_readi.iloc[-1][readi_k])}")
+        
+        build_pro_chart(df_v, t_date, ['BODYWEIGHT (kg)'], "Weight Trend")
 
     with tabs[1]:
-        st.subheader("InBody Composition Analysis")
+        st.subheader("InBody Decisive Analysis")
         if not ib_v.empty:
-            bf = next((c for c in ib_v.columns if 'BF%' in c or 'FAT' in c.upper()), None)
-            mm = next((c for c in ib_v.columns if 'MUSCLE' in c.upper()), None)
-            build_master_chart(ib_v, i_date, [c for c in [bf, mm] if c], "Fat % vs Muscle Mass")
-        else: st.info("Check InBody GID & row 3 headers.")
+            bf_col = next((c for c in ib_v.columns if 'BF%' in c or 'FAT' in c.upper()), None)
+            mm_col = next((c for c in ib_v.columns if 'MUSCLE' in c.upper()), None)
+            build_pro_chart(ib_v, i_date, [c for c in [bf_col, mm_col] if c], "Fat % vs Muscle Mass")
+        else:
+            st.info("Check InBody GID & row 3 headers.")
 
     with tabs[2]:
-        st.subheader("Oura Biometrics")
-        if not ou_v.empty:
-            # Dynamic search for Oura columns
-            metrics = []
-            for target in ['readiness', 'sleep_score', 'hrv']:
-                match = next((c for c in ou_v.columns if target in c.lower()), None)
-                if match: metrics.append(match)
-            build_master_chart(ou_v, o_date, metrics, "Combined Recovery Trends")
-        else: st.warning("Oura data missing.")
+        st.subheader("Amalgamated Recovery")
+        build_pro_chart(ou_v, o_date, ['readiness', 'sleep_score', 'hrv'], "Readiness vs Sleep vs HRV")
+        
+        st.divider()
+        st.subheader("Decisive Strain Markers")
+        build_pro_chart(ou_v, o_date, ['heart_rate', 'temperature_deviation'], "RHR & Temp Deviation")
 
     with tabs[3]:
-        st.subheader("Master Correlation Timeline")
-        fig_master = go.Figure()
-        fig_master.add_trace(go.Bar(x=df_v[t_date], y=df_v['STEPS_CLEAN'], name="Steps", marker_color='rgba(0, 255, 204, 0.2)'))
+        st.subheader("Activity vs Readiness Correlation")
+        fig = go.Figure()
+        if not df_v.empty and 'STEPS_CLEAN' in df_v.columns:
+            fig.add_trace(go.Bar(x=df_v[t_date], y=df_v['STEPS_CLEAN'], name="Steps", marker_color='rgba(0, 255, 204, 0.3)'))
         if not ou_v.empty:
-            rk = next((c for c in ou_v.columns if 'readiness' in c.lower()), None)
-            if rk: fig_master.add_trace(go.Scatter(x=ou_v[o_date], y=ou_v[rk], name="Readiness", line=dict(color='#FF4B4B', width=4)))
-        fig_master.update_layout(template="plotly_dark", height=500)
-        st.plotly_chart(fig_master, use_container_width=True)
+            readi_k_tl = next((c for c in ou_v.columns if 'readiness' in c.lower()), None)
+            # Safe trace addition
+            if readi_k_tl and readi_k_tl in ou_v.columns:
+                valid_tl = ou_v.dropna(subset=[readi_k_tl])
+                fig.add_trace(go.Scatter(x=valid_tl[o_date], y=valid_tl[readi_k_tl], name="Readiness", line=dict(color='#FF4B4B', width=4)))
+        fig.update_layout(template="plotly_dark", height=500, hovermode="x unified")
+        st.plotly_chart(fig, use_container_width=True)
 
 except Exception as e:
-    st.error(f"Intelligence Module Error: {e}")
+    st.error(f"Sync Error: {e}")
