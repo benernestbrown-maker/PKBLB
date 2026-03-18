@@ -15,112 +15,90 @@ st.markdown("""
     """, unsafe_allow_html=True)
 
 # 2. Expert Data Connector
-# UPDATE THESE GIDs based on your spreadsheet URLs
-TRACKER_GID = "0"
-INBODY_GID = "1795026937" 
-OURA_GID = "1547806509"
-
-BASE_URL = "https://docs.google.com/spreadsheets/d/e/2PACX-1vRcgV5PFrp4XmAcNn3cutN0PvxKoZGhTY8wc8NKp70wDdajdsrYPOfNWezEBCoX-wSJyGtHSDDMyqse/pub?"
+CSV_URL = "https://docs.google.com/spreadsheets/d/e/2PACX-1vRcgV5PFrp4XmAcNn3cutN0PvxKoZGhTY8wc8NKp70wDdajdsrYPOfNWezEBCoX-wSJyGtHSDDMyqse/pub?output=csv"
 
 @st.cache_data(ttl=60)
-def fetch_tab(gid, skip_rows=0):
-    url = f"{BASE_URL}gid={gid}&single=true&output=csv"
-    try:
-        df = pd.read_csv(url, skiprows=skip_rows)
-        df.columns = [str(c).replace('\n', ' ').strip() for c in df.columns]
-        return df
-    except Exception as e:
-        st.error(f"Tab ID {gid} Error: {e}")
-        return pd.DataFrame()
-
-def process_dates(df, date_col):
-    if date_col in df.columns:
-        df[date_col] = pd.to_datetime(df[date_col], dayfirst=True, errors='coerce')
-        df = df.dropna(subset=[date_col])
-        # Expert Filter: Purge future-dated empty rows
-        df = df[df[date_col] <= datetime.now()]
+def load_and_clean():
+    # Load Daily Tracker (Skip spreadsheet headers)
+    df = pd.read_csv(CSV_URL, skiprows=4)
+    df.columns = [str(c).replace('\n', ' ').strip() for c in df.columns]
+    
+    # Convert DATE and PURGE FUTURE ROWS
+    df['DATE'] = pd.to_datetime(df['DATE'], dayfirst=True, errors='coerce')
+    df = df.dropna(subset=['DATE'])
+    
+    # This line kills the 'child scribble' by ignoring future dates
+    df = df[df['DATE'] <= datetime.now()]
+    
+    # Clean numeric columns
+    metrics = ['BODYWEIGHT (kg)', 'STEPS', 'ENERGY LEVELS Scale 1-10', 'STRESS LEVELS Scale 1-10']
+    for col in metrics:
+        df[col] = pd.to_numeric(df[col].astype(str).str.replace(',', ''), errors='coerce')
     return df
 
-try:
-    # --- DATA ACQUISITION ---
-    raw_tracker = fetch_tab(TRACKER_GID, skip_rows=4)
-    tracker_df = process_dates(raw_tracker, 'DATE')
+def render_expert_chart(df, col, title, color, timeframe, is_bar=False):
+    plot_df = df.dropna(subset=[col])
+    if plot_df.empty: return
     
-    inbody_df = process_dates(fetch_tab(INBODY_GID, skip_rows=2), 'DATE')
-    oura_df = process_dates(fetch_tab(OURA_GID), 'day')
+    fig = go.Figure()
+    if is_bar:
+        fig.add_trace(go.Bar(x=plot_df['DATE'], y=plot_df[col], marker_color=color, opacity=0.8))
+    else:
+        fig.add_trace(go.Scatter(x=plot_df['DATE'], y=plot_df[col], 
+                                 line=dict(color=color, width=4, shape='spline'),
+                                 mode='lines+markers', marker=dict(size=8)))
+    
+    fig.update_layout(
+        template="plotly_dark", title=f"<b>{title}</b> ({timeframe})",
+        height=400, margin=dict(l=10, r=10, t=50, b=10),
+        hovermode="x unified", showlegend=False,
+        xaxis=dict(showgrid=False), yaxis=dict(gridcolor='rgba(255,255,255,0.05)')
+    )
+    st.plotly_chart(fig, use_container_width=True)
 
-    # --- SIDEBAR: TIME INTELLIGENCE ---
+try:
+    full_df = load_and_clean()
+    
+    # --- SIDEBAR: TIME CONTROLS ---
     st.sidebar.title("📈 Time Controls")
     time_choice = st.sidebar.selectbox(
         "Select Visual Window", 
         ["Week", "Month", "3 Months", "6 Months", "12 Months", "All Time"]
     )
     
+    # Logic for timeframes
+    latest_date = full_df['DATE'].max()
     windows = {"Week": 7, "Month": 30, "3 Months": 90, "6 Months": 180, "12 Months": 365, "All Time": 9999}
-    latest_date = tracker_df['DATE'].max()
     start_date = latest_date - timedelta(days=windows[time_choice])
-    
-    # Filter views
-    df_v = tracker_df[tracker_df['DATE'] >= start_date]
-    ib_v = inbody_df[inbody_df['DATE'] >= start_date]
-    ou_v = oura_df[oura_df['day'] >= start_date]
+    df_view = full_df[full_df['DATE'] >= start_date]
 
     # --- TOP ROW: HUD ---
     st.title("⚡ PERFORMANCE COMMAND CENTRE")
-    latest = tracker_df.dropna(subset=['BODYWEIGHT (kg)']).iloc[-1]
+    latest = full_df.dropna(subset=['BODYWEIGHT (kg)']).iloc[-1]
     
     c1, c2, c3, c4 = st.columns(4)
     c1.metric("Bodyweight", f"{latest['BODYWEIGHT (kg)']} kg")
     
-    steps = int(pd.to_numeric(str(latest['STEPS']).replace(',', ''), errors='coerce'))
-    c2.metric("Steps", f"{steps:,}", f"{steps - 12500} vs Goal")
+    steps = int(latest['STEPS']) if not pd.isna(latest['STEPS']) else 0
+    c2.metric("Latest Steps", f"{steps:,}", f"{steps - 12500} vs Goal")
     c3.metric("Energy", f"{latest['ENERGY LEVELS Scale 1-10']}/10")
-    c4.metric("Sleep", f"{latest['SLEEP QUALITY Sleep Score OR Scale 1-10']}")
+    c4.metric("Stress", f"{latest['STRESS LEVELS Scale 1-10']}/10")
 
     st.divider()
 
-    # --- DATA TABS ---
-    t_comp, t_act, t_rec = st.tabs(["📉 Composition", "🏃 Activity", "😴 Recovery"])
+    # --- THE DATA TABS ---
+    tab_weight, tab_activity, tab_bio = st.tabs(["📉 Composition", "🏃 Activity", "😴 Biofeedback"])
 
-    with t_comp:
-        # Weight Trend
-        fig_w = go.Figure()
-        fig_w.add_trace(go.Scatter(x=df_v['DATE'], y=df_v['BODYWEIGHT (kg)'], line=dict(color='#00ffcc', width=4, shape='spline'), mode='lines+markers'))
-        fig_w.update_layout(template="plotly_dark", title=f"Weight Trend ({time_choice})", height=400, margin=dict(l=10, r=10, t=50, b=10))
-        st.plotly_chart(fig_w, use_container_width=True)
+    with tab_weight:
+        render_expert_chart(df_view, 'BODYWEIGHT (kg)', "Weight Trend", "#00ffcc", time_choice)
         
-        # InBody Metrics
-        col1, col2 = st.columns(2)
-        if not ib_v.empty:
-            with col1:
-                fig_bf = go.Figure(go.Scatter(x=ib_v['DATE'], y=ib_v['BF%'], line=dict(color='#FF4B4B', width=3)))
-                fig_bf.update_layout(template="plotly_dark", title="Body Fat %", height=300)
-                st.plotly_chart(fig_bf, use_container_width=True)
-            with col2:
-                fig_mm = go.Figure(go.Scatter(x=ib_v['DATE'], y=ib_v['MUSCLE MASS'], line=dict(color='#00FFAA', width=3)))
-                fig_mm.update_layout(template="plotly_dark", title="Muscle Mass (kg)", height=300)
-                st.plotly_chart(fig_mm, use_container_width=True)
-
-    with t_act:
-        fig_s = go.Figure(go.Bar(x=df_v['DATE'], y=pd.to_numeric(df_v['STEPS'].astype(str).str.replace(',', ''), errors='coerce'), marker_color='#00ffcc'))
-        fig_s.add_hline(y=12500, line_dash="dash", line_color="white")
-        fig_s.update_layout(template="plotly_dark", title="Daily Step Activity", height=400)
-        st.plotly_chart(fig_s, use_container_width=True)
-
-    with t_rec:
-        if not ou_v.empty:
-            fig_h = go.Figure()
-            fig_h.add_trace(go.Scatter(x=ou_v['day'], y=ou_v['average_hrv'], name="HRV", line=dict(color='#00ffcc', width=3)))
-            fig_h.add_trace(go.Scatter(x=ou_v['day'], y=ou_v['readiness_score'], name="Readiness", line=dict(color='#FF4B4B', width=2, dash='dot')))
-            fig_h.update_layout(template="plotly_dark", title="Oura Recovery Trends", height=400)
-            st.plotly_chart(fig_h, use_container_width=True)
-
-    # --- COACHING FEEDBACK ---
-    st.divider()
-    with st.expander("📝 Latest Daily Comments"):
-        notes = df_v.dropna(subset=['DAILY COMMENTS']).tail(5)
-        for _, row in notes.iterrows():
-            st.info(f"**{row['DATE'].strftime('%d %b')}:** {row['DAILY COMMENTS']}")
+    with tab_activity:
+        render_expert_chart(df_view, 'STEPS', "Step Activity", "#FF4B4B", time_choice, is_bar=True)
+        
+    with tab_bio:
+        col_e, col_s = st.columns(2)
+        with col_e: render_expert_chart(df_view, 'ENERGY LEVELS Scale 1-10', "Energy", "#FFEB3B", time_choice)
+        with col_s: render_expert_chart(df_view, 'STRESS LEVELS Scale 1-10', "Stress", "#FF9800", time_choice)
 
 except Exception as e:
-    st.error(f"Intelligence Module Error: {e}")
+    st.error(f"Waiting for Data Sync... Error: {e}")
