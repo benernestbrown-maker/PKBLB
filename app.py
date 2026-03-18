@@ -34,7 +34,7 @@ def fetch_all_data():
     # Tracker Cleaning (Row 5 start)
     df = get_df(TRACKER_GID, skip=4)
     t_date = next((c for c in df.columns if 'DATE' in c.upper()), None)
-    if t_date:
+    if t_date and not df.empty:
         df[t_date] = pd.to_datetime(df[t_date], dayfirst=True, errors='coerce')
         df = df.dropna(subset=[t_date])
         df = df[df[t_date] <= datetime.now()]
@@ -86,12 +86,18 @@ def build_chart(df, x_col, y_col, title, color, is_bar=False, show_avg=False):
 try:
     df, oura, inbody, t_date, o_date, i_date = fetch_all_data()
     
+    if df.empty:
+        st.warning("Still waiting for data from the Google Sheet...")
+        st.stop()
+
     # --- CONTROLS ---
     st.sidebar.title("🎛️ Controls")
     time_choice = st.sidebar.selectbox("Window", ["Week", "Month", "3 Months", "6 Months", "All Time"])
     windows = {"Week": 7, "Month": 30, "3 Months": 90, "6 Months": 180, "All Time": 9999}
     
-    start_date = df[t_date].max() - timedelta(days=windows[time_choice])
+    latest_val = df[t_date].max()
+    start_date = latest_val - timedelta(days=windows[time_choice])
+    
     df_v = df[df[t_date] >= start_date]
     ou_v = oura[oura[o_date] >= start_date] if not oura.empty else pd.DataFrame()
     ib_v = inbody[inbody[i_date] >= start_date] if not inbody.empty else pd.DataFrame()
@@ -102,7 +108,6 @@ try:
     t1, t2, t3, t4 = st.tabs(["📊 Vitals", "📉 Composition", "😴 Recovery", "📅 Timeline"])
 
     with t1:
-        # Safety: Find the absolute latest weight logged
         weight_data = df.dropna(subset=['BODYWEIGHT (kg)'])
         latest_w = weight_data.iloc[-1] if not weight_data.empty else None
         
@@ -113,15 +118,15 @@ try:
             c2.metric("Steps", f"{step_val:,}", f"{step_val - 12500}")
         
         if not ou_v.empty:
-            readiness_col = next((c for c in ou_v.columns if 'READINESS' in c.upper()), None)
-            sleep_col = next((c for c in ou_v.columns if 'SLEEP' in c.upper() and 'SCORE' in c.upper()), None)
+            read_col = next((c for c in ou_v.columns if 'READINESS' in c.upper()), None)
+            slp_score = next((c for c in ou_v.columns if 'SLEEP' in c.upper() and 'SCORE' in c.upper()), None)
             
-            if readiness_col:
-                lo_r = ou_v.dropna(subset=[readiness_col]).iloc[-1]
-                c3.metric("Readiness", f"{int(lo_r[readiness_col])}")
-            if sleep_col:
-                lo_s = ou_v.dropna(subset=[sleep_col]).iloc[-1]
-                c4.metric("Sleep", f"{int(lo_s[sleep_col])}")
+            if read_col:
+                lo_r = ou_v.dropna(subset=[read_col]).iloc[-1]
+                c3.metric("Readiness", f"{int(lo_r[read_col])}")
+            if slp_score:
+                lo_s = ou_v.dropna(subset=[slp_score]).iloc[-1]
+                c4.metric("Sleep", f"{int(lo_s[slp_score])}")
         
         build_chart(df_v, t_date, 'BODYWEIGHT (kg)', "Weight Trend", "#00ffcc", show_avg=True)
 
@@ -137,7 +142,7 @@ try:
             if mm_col:
                 with col_b: build_chart(ib_v, i_date, mm_col, "Muscle Mass (kg)", "#00FFAA")
         else:
-            st.info("No InBody data found. Ensure headers are on Row 3 and GID is correct.")
+            st.info("No InBody data found. Confirm your InBody GID is correct.")
 
     with t3:
         if not ou_v.empty:
@@ -151,8 +156,8 @@ try:
         st.subheader("Master Performance Timeline")
         build_chart(df_v, t_date, 'STEPS', "Steps", "#FF4B4B", is_bar=True)
         if not ou_v.empty:
-            hrv_col = next((c for c in ou_v.columns if 'HRV' in c.upper()), None)
-            if hrv_col: build_chart(ou_v, o_date, hrv_col, "Recovery (HRV)", "#00ffcc")
+            hrv_tl = next((c for c in ou_v.columns if 'HRV' in c.upper()), None)
+            if hrv_tl: build_chart(ou_v, o_date, hrv_tl, "Recovery (HRV)", "#00ffcc")
         build_chart(df_v, t_date, 'BODYWEIGHT (kg)', "Weight (kg)", "#00ffcc", show_avg=True)
 
 except Exception as e:
