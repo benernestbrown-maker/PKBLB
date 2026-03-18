@@ -1,71 +1,93 @@
 import streamlit as st
 import pandas as pd
 import plotly.graph_objects as go
-from plotly.subplots import make_subplots
 
-# Page Config
+# 1. Page Config
 st.set_page_config(page_title="Performance Hub", layout="wide")
 
-# --- CONFIGURATION ---
-# UPDATE THESE GIDs based on your browser URL
-TRACKER_GID = "0"          # Check the gid for 'Daily Tracker'
-OURA_GID = "1547806509"    # Check the gid for 'Oura_Link'
-BASE_URL = "https://docs.google.com/spreadsheets/d/e/2PACX-1vRcgV5PFrp4XmAcNn3cutN0PvxKoZGhTY8wc8NKp70wDdajdsrYPOfNWezEBCoX-wSJyGtHSDDMyqse/pub?"
+st.markdown("""
+    <style>
+    .main { background-color: #0e1117; }
+    div[data-testid="stMetricValue"] { color: #00ffcc; font-size: 2.2rem; }
+    </style>
+    """, unsafe_allow_html=True)
+
+# 2. Data Connection (Entire Document Link)
+CSV_URL = "https://docs.google.com/spreadsheets/d/e/2PACX-1vRcgV5PFrp4XmAcNn3cutN0PvxKoZGhTY8wc8NKp70wDdajdsrYPOfNWezEBCoX-wSJyGtHSDDMyqse/pub?output=csv"
 
 @st.cache_data(ttl=60)
-def fetch_data(gid, skip=0):
-    url = f"{BASE_URL}gid={gid}&single=true&output=csv"
-    df = pd.read_csv(url, skiprows=skip)
+def load_and_clean():
+    # Load Daily Tracker (Skip the headers)
+    df = pd.read_csv(CSV_URL, skiprows=4)
     df.columns = [str(c).replace('\n', ' ').strip() for c in df.columns]
+    
+    # Keep only rows with a date
+    df = df.dropna(subset=['DATE'])
+    
+    # Clean up numeric columns
+    df['BODYWEIGHT (kg)'] = pd.to_numeric(df['BODYWEIGHT (kg)'], errors='coerce')
+    df['STEPS'] = pd.to_numeric(df['STEPS'].astype(str).str.replace(',', ''), errors='coerce')
+    
     return df
 
 try:
-    # Sidebar Navigation
-    st.sidebar.title("Navigation")
-    page = st.sidebar.radio("Go to", ["Dashboard", "Recovery (Oura)"])
+    df = load_and_clean()
+    
+    # Filter for ONLY rows with actual data so the graph isn't 'busy' with zeros
+    weight_df = df.dropna(subset=['BODYWEIGHT (kg)'])
+    steps_df = df.dropna(subset=['STEPS'])
+    
+    st.title("⚡ BEN'S PERFORMANCE HUB")
 
-    if page == "Dashboard":
-        df = fetch_data(TRACKER_GID, skip=4)
-        df = df.dropna(subset=['DATE'])
-        df['BODYWEIGHT (kg)'] = pd.to_numeric(df['BODYWEIGHT (kg)'], errors='coerce')
-        df['STEPS'] = pd.to_numeric(df['STEPS'].astype(str).str.replace(',', ''), errors='coerce')
+    # --- TOP ROW: STATS ---
+    if not weight_df.empty:
+        latest = weight_df.iloc[-1]
+        c1, c2, c3 = st.columns(3)
+        c1.metric("Bodyweight", f"{latest['BODYWEIGHT (kg)']}kg")
         
-        latest = df.dropna(subset=['BODYWEIGHT (kg)']).iloc[-1]
-        plot_df = df.tail(30)
-
-        st.title("⚡ BEN'S PERFORMANCE HUB")
-        
-        # Metrics
-        c1, c2, c3, c4 = st.columns(4)
-        c1.metric("Weight", f"{latest['BODYWEIGHT (kg)']}kg")
-        steps = int(latest['STEPS']) if not pd.isna(latest['STEPS']) else 0
-        c2.metric("Steps", f"{steps:,}", f"{steps - 12500} vs Goal")
+        step_val = int(latest['STEPS']) if not pd.isna(latest['STEPS']) else 0
+        c2.metric("Latest Steps", f"{step_val:,}", f"{step_val - 12500} vs Goal")
         c3.metric("Energy", f"{latest['ENERGY LEVELS Scale 1-10']}/10")
-        c4.metric("Sleep", f"{latest['SLEEP QUALITY Sleep Score OR Scale 1-10']}")
 
-        st.divider()
+    st.divider()
 
-        # Dual Axis Chart
-        fig = make_subplots(specs=[[{"secondary_y": True}]])
-        fig.add_trace(go.Bar(x=plot_df['DATE'], y=plot_df['STEPS'], name="Steps", marker_color='rgba(0, 255, 204, 0.2)'), secondary_y=False)
-        fig.add_trace(go.Scatter(x=plot_df['DATE'], y=plot_df['BODYWEIGHT (kg)'], name="Weight", line=dict(color='#00ffcc', width=4, shape='spline'), mode='lines+markers'), secondary_y=True)
-        
-        fig.update_layout(template="plotly_dark", hovermode="x unified", showlegend=False, height=500, margin=dict(l=10, r=10, t=10, b=10))
-        fig.update_yaxes(title_text="Steps", secondary_y=False, showgrid=False)
-        fig.update_yaxes(title_text="Weight (kg)", secondary_y=True, showgrid=True, gridcolor='rgba(255,255,255,0.1)')
-        st.plotly_chart(fig, use_container_width=True)
+    # --- THE GRAPHS (SPLIT FOR CLARITY) ---
+    
+    # Chart 1: Weight Trend
+    st.subheader("📉 Bodyweight Progress (kg)")
+    if not weight_df.empty:
+        fig_weight = go.Figure()
+        fig_weight.add_trace(go.Scatter(
+            x=weight_df['DATE'], 
+            y=weight_df['BODYWEIGHT (kg)'],
+            line=dict(color='#00ffcc', width=4, shape='spline'),
+            mode='lines+markers',
+            name="Weight"
+        ))
+        fig_weight.update_layout(template="plotly_dark", height=350, margin=dict(l=10, r=10, t=10, b=10))
+        st.plotly_chart(fig_weight, use_container_width=True)
 
-    elif page == "Recovery (Oura)":
-        st.title("😴 Recovery Insights")
-        oura_df = fetch_data(OURA_GID)
-        
-        # HRV and Readiness Trends
-        fig_oura = make_subplots(specs=[[{"secondary_y": True}]])
-        fig_oura.add_trace(go.Scatter(x=oura_df['day'], y=oura_df['average_hrv'], name="HRV", line=dict(color='#00FFAA', width=3)), secondary_y=False)
-        fig_oura.add_trace(go.Scatter(x=oura_df['day'], y=oura_df['readiness_score'], name="Readiness", line=dict(color='#FF4B4B', width=2, dash='dot')), secondary_y=True)
-        fig_oura.update_layout(template="plotly_dark", height=500)
-        st.plotly_chart(fig_oura, use_container_width=True)
+    # Chart 2: Step Activity
+    st.subheader("🏃 Daily Step Count")
+    if not steps_df.empty:
+        fig_steps = go.Figure()
+        fig_steps.add_trace(go.Bar(
+            x=steps_df['DATE'], 
+            y=steps_df['STEPS'],
+            marker_color='#FF4B4B',
+            name="Steps"
+        ))
+        # Add a Goal Line at 12,500
+        fig_steps.add_hline(y=12500, line_dash="dash", line_color="white", annotation_text="Goal")
+        fig_steps.update_layout(template="plotly_dark", height=350, margin=dict(l=10, r=10, t=10, b=10))
+        st.plotly_chart(fig_steps, use_container_width=True)
+
+    # --- PT NOTES ---
+    st.divider()
+    with st.expander("📝 View Recent Training Comments"):
+        notes = df.dropna(subset=['DAILY COMMENTS']).tail(5)
+        for _, row in notes.iterrows():
+            st.info(f"**{row['DATE']}**: {row['DAILY COMMENTS']}")
 
 except Exception as e:
-    st.error(f"Error: {e}")
-    st.info("Check if your Daily Tracker gid is correct (usually 0).")
+    st.error(f"Waiting for data... Ensure 'Daily Tracker' is the first tab in your sheet. Error: {e}")
