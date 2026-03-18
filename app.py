@@ -32,16 +32,14 @@ def fetch_all_data():
             return df
         except: return pd.DataFrame()
 
-    # --- TRACKER CLEANING ---
+    # --- TRACKER CLEANING (Skip 4 rows: Data row 5) ---
     df = get_df(TRACKER_GID, skip=4)
-    # Ensure DATE column exists and is parsed
     date_col = next((c for c in df.columns if 'DATE' in c.upper()), None)
     if date_col:
         df[date_col] = pd.to_datetime(df[date_col], dayfirst=True, errors='coerce')
         df = df.dropna(subset=[date_col])
         df = df[df[date_col] <= datetime.now()]
     
-    # Numeric conversion for Tracker
     for col in ['BODYWEIGHT (kg)', 'STEPS']:
         if col in df.columns:
             df[col] = pd.to_numeric(df[col].astype(str).str.replace(',', ''), errors='coerce')
@@ -54,18 +52,19 @@ def fetch_all_data():
         oura = oura.dropna(subset=[o_date])
         oura = oura[oura[o_date] <= datetime.now()]
 
-    # --- INBODY CLEANING ---
+    # --- INBODY CLEANING (Skip 2 rows: Headers on row 3) ---
     inbody = get_df(INBODY_GID, skip=2)
+    i_date = None
     if not inbody.empty:
         i_date = next((c for c in inbody.columns if 'DATE' in c.upper()), inbody.columns[0])
         inbody[i_date] = pd.to_datetime(inbody[i_date], dayfirst=True, errors='coerce')
         inbody = inbody.dropna(subset=[i_date])
         inbody = inbody[inbody[i_date] <= datetime.now()]
 
-    return df, oura, inbody, date_col
+    return df, oura, inbody, date_col, i_date
 
 def build_chart(df, x_col, y_col, title, color, timeframe, is_bar=False, show_avg=False):
-    if y_col not in df.columns: return # Safety check
+    if y_col not in df.columns: return 
     data = df.dropna(subset=[y_col]).copy()
     if data.empty: return
     
@@ -85,7 +84,7 @@ def build_chart(df, x_col, y_col, title, color, timeframe, is_bar=False, show_av
     st.plotly_chart(fig, use_container_width=True)
 
 try:
-    df, oura, inbody, t_date_name = fetch_all_data()
+    df, oura, inbody, t_date_name, i_date_name = fetch_all_data()
     
     # --- TIME CONTROLS ---
     st.sidebar.title("🎛️ Dashboard Controls")
@@ -97,7 +96,7 @@ try:
     
     df_v = df[df[t_date_name] >= start_date]
     ou_v = oura[oura.iloc[:,0] >= start_date] if not oura.empty else pd.DataFrame()
-    ib_v = inbody[inbody.iloc[:,0] >= start_date] if not inbody.empty else pd.DataFrame()
+    ib_v = inbody[inbody[i_date_name] >= start_date] if not inbody.empty else pd.DataFrame()
 
     st.title("⚡ PERFORMANCE COMMAND CENTRE")
 
@@ -105,7 +104,6 @@ try:
     t1, t2, t3, t4 = st.tabs(["📊 Vitals", "📉 Composition", "😴 Recovery", "📅 Timeline"])
 
     with t1:
-        # Robust metric gathering (gets last non-null value)
         latest_weight_row = df.dropna(subset=['BODYWEIGHT (kg)']).iloc[-1]
         c1, c2, c3, c4 = st.columns(4)
         c1.metric("Weight", f"{latest_weight_row['BODYWEIGHT (kg)']} kg")
@@ -124,16 +122,15 @@ try:
         st.subheader("InBody Decisive Data")
         if not ib_v.empty:
             col_a, col_b = st.columns(2)
-            # Logic: Using column index if names are tricky
             bf_col = next((c for c in ib_v.columns if 'BF%' in c or 'FAT' in c.upper()), None)
             mm_col = next((c for c in ib_v.columns if 'MUSCLE' in c.upper()), None)
             
             if bf_col:
-                with col_a: build_chart(ib_v, ib_v.columns[0], bf_col, "Body Fat %", "#FF4B4B", time_choice)
+                with col_a: build_chart(ib_v, i_date_name, bf_col, "Body Fat %", "#FF4B4B", time_choice)
             if mm_col:
-                with col_b: build_chart(ib_v, ib_v.columns[0], mm_col, "Muscle Mass (kg)", "#00FFAA", timeframe=time_choice)
+                with col_b: build_chart(ib_v, i_date_name, mm_col, "Muscle Mass (kg)", "#00FFAA", time_choice)
         else:
-            st.info("No InBody data found within this timeframe.")
+            st.info("No InBody data found within this timeframe. Ensure headers are on Row 3.")
 
     with t3:
         if not ou_v.empty:
@@ -146,7 +143,7 @@ try:
         build_chart(df_v, t_date_name, 'STEPS', "Steps", "#FF4B4B", time_choice, is_bar=True)
         if not ou_v.empty:
             build_chart(ou_v, ou_v.columns[0], 'average_hrv', "Recovery (HRV)", "#00ffcc", time_choice)
-        build_chart(df_v, t_date_name, 'BODYWEIGHT (kg)', "Weight (kg)", "#00ffcc", time_choice)
+        build_chart(df_v, t_date_name, 'BODYWEIGHT (kg)', "Weight (kg)", "#00ffcc", time_choice, show_avg=True)
 
 except Exception as e:
-    st.error(f"Syncing... Check column names or GIDs. Error: {e}")
+    st.error(f"Syncing... Error: {e}")
