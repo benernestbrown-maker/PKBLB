@@ -14,7 +14,7 @@ st.markdown("""
     </style>
     """, unsafe_allow_html=True)
 
-# GIDs - Verified by User
+# GIDs
 TRACKER_GID = "0"
 OURA_GID = "502032885"
 INBODY_GID = "686934394" 
@@ -31,7 +31,7 @@ def fetch_all_data():
             return df
         except: return pd.DataFrame()
 
-    # Tracker Cleaning (Row 5 start)
+    # Tracker
     df = get_df(TRACKER_GID, skip=4)
     t_date = next((c for c in df.columns if 'DATE' in c.upper()), None)
     if t_date and not df.empty:
@@ -43,7 +43,7 @@ def fetch_all_data():
         if col in df.columns:
             df[col] = pd.to_numeric(df[col].astype(str).str.replace(',', ''), errors='coerce')
     
-    # Oura Cleaning
+    # Oura - Pulling Decisive Recovery Metrics
     oura = get_df(OURA_GID)
     o_date = None
     if not oura.empty:
@@ -51,8 +51,13 @@ def fetch_all_data():
         oura[o_date] = pd.to_datetime(oura[o_date], errors='coerce')
         oura = oura.dropna(subset=[o_date])
         oura = oura[oura[o_date] <= datetime.now()]
+        # Clean Oura Numeric
+        oura_cols = ['readiness_score', 'score_sleep', 'average_hrv', 'rest_heart_rate', 'respiratory_rate']
+        for c in oura_cols:
+            if c in oura.columns:
+                oura[c] = pd.to_numeric(oura[c], errors='coerce')
 
-    # InBody Cleaning (Row 3 Headers)
+    # InBody
     inbody = get_df(INBODY_GID, skip=2)
     i_date = None
     if not inbody.empty:
@@ -63,102 +68,111 @@ def fetch_all_data():
 
     return df, oura, inbody, t_date, o_date, i_date
 
-def build_chart(df, x_col, y_col, title, color, is_bar=False, show_avg=False):
-    if y_col not in df.columns: return 
-    data = df.dropna(subset=[y_col]).copy()
-    if data.empty: return
-    
+def build_combined_chart(data, x_col, y_cols, title, timeframe):
+    """Amalgamates multiple metrics into one clear visual"""
     fig = go.Figure()
-    if is_bar:
-        fig.add_trace(go.Bar(x=data[x_col], y=data[y_col], marker_color=color, opacity=0.8))
-    else:
-        fig.add_trace(go.Scatter(x=data[x_col], y=data[y_col], name="Daily",
-                                 line=dict(color=color, width=2), mode='lines+markers'))
-        if show_avg and len(data) > 7:
-            data['avg'] = data[y_col].rolling(window=7).mean()
-            fig.add_trace(go.Scatter(x=data[x_col], y=data['avg'], name="7-Day Avg",
-                                     line=dict(color='white', width=4, dash='dot')))
+    colors = ['#00ffcc', '#FF4B4B', '#9C27B0', '#FFEB3B', '#00FFAA']
     
-    fig.update_layout(template="plotly_dark", title=f"<b>{title}</b>", height=380, 
-                      margin=dict(l=10, r=10, t=50, b=10), hovermode="x unified")
+    for i, col in enumerate(y_cols):
+        if col in data.columns:
+            clean = data.dropna(subset=[col])
+            fig.add_trace(go.Scatter(
+                x=clean[x_col], y=clean[col], 
+                name=col.replace('_', ' ').title(),
+                line=dict(color=colors[i % len(colors)], width=3, shape='spline'),
+                mode='lines+markers'
+            ))
+            
+    fig.update_layout(
+        template="plotly_dark", title=f"<b>{title}</b>",
+        height=450, margin=dict(l=10, r=10, t=50, b=10),
+        hovermode="x unified", legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1)
+    )
     st.plotly_chart(fig, use_container_width=True)
 
 try:
     df, oura, inbody, t_date, o_date, i_date = fetch_all_data()
     
-    if df.empty:
-        st.warning("Still waiting for data from the Google Sheet...")
-        st.stop()
-
     # --- CONTROLS ---
-    st.sidebar.title("🎛️ Controls")
-    time_choice = st.sidebar.selectbox("Window", ["Week", "Month", "3 Months", "6 Months", "All Time"])
+    st.sidebar.title("🎛️ Performance Controls")
+    time_choice = st.sidebar.selectbox("Analysis Window", ["Week", "Month", "3 Months", "6 Months", "All Time"])
     windows = {"Week": 7, "Month": 30, "3 Months": 90, "6 Months": 180, "All Time": 9999}
     
-    latest_val = df[t_date].max()
-    start_date = latest_val - timedelta(days=windows[time_choice])
-    
+    start_date = df[t_date].max() - timedelta(days=windows[time_choice])
     df_v = df[df[t_date] >= start_date]
     ou_v = oura[oura[o_date] >= start_date] if not oura.empty else pd.DataFrame()
     ib_v = inbody[inbody[i_date] >= start_date] if not inbody.empty else pd.DataFrame()
 
-    st.title("⚡ PERFORMANCE COMMAND CENTRE")
+    st.title("⚡ BEN'S PERFORMANCE COMMAND CENTRE")
 
     # --- TABS ---
-    t1, t2, t3, t4 = st.tabs(["📊 Vitals", "📉 Composition", "😴 Recovery", "📅 Timeline"])
+    t1, t2, t3, t4 = st.tabs(["📊 Vitals Overview", "📉 Composition Hub", "😴 Oura Deep-Dive", "📅 Intelligence Timeline"])
 
     with t1:
-        weight_data = df.dropna(subset=['BODYWEIGHT (kg)'])
-        latest_w = weight_data.iloc[-1] if not weight_data.empty else None
-        
         c1, c2, c3, c4 = st.columns(4)
-        if latest_w is not None:
-            c1.metric("Weight", f"{latest_w['BODYWEIGHT (kg)']} kg")
-            step_val = int(latest_w['STEPS']) if not pd.isna(latest_w['STEPS']) else 0
-            c2.metric("Steps", f"{step_val:,}", f"{step_val - 12500}")
+        latest_w = df.dropna(subset=['BODYWEIGHT (kg)']).iloc[-1]
+        c1.metric("Weight", f"{latest_w['BODYWEIGHT (kg)']} kg")
+        s_val = int(latest_w['STEPS']) if not pd.isna(latest_w['STEPS']) else 0
+        c2.metric("Steps", f"{s_val:,}")
         
         if not ou_v.empty:
-            read_col = next((c for c in ou_v.columns if 'READINESS' in c.upper()), None)
-            slp_score = next((c for c in ou_v.columns if 'SLEEP' in c.upper() and 'SCORE' in c.upper()), None)
-            
-            if read_col:
-                lo_r = ou_v.dropna(subset=[read_col]).iloc[-1]
-                c3.metric("Readiness", f"{int(lo_r[read_col])}")
-            if slp_score:
-                lo_s = ou_v.dropna(subset=[slp_score]).iloc[-1]
-                c4.metric("Sleep", f"{int(lo_s[slp_score])}")
+            lo = ou_v.iloc[-1]
+            c3.metric("HRV", f"{int(lo['average_hrv'])}ms")
+            c4.metric("Readiness", f"{int(lo['readiness_score'])}")
         
-        build_chart(df_v, t_date, 'BODYWEIGHT (kg)', "Weight Trend", "#00ffcc", show_avg=True)
+        st.subheader("Amalgamated Weight & Activity Trend")
+        # Dual Axis for Weight vs Steps
+        fig_dual = go.Figure()
+        fig_dual.add_trace(go.Scatter(x=df_v[t_date], y=df_v['BODYWEIGHT (kg)'], name="Weight", line=dict(color='#00ffcc', width=4)))
+        fig_dual.add_trace(go.Bar(x=df_v[t_date], y=df_v['STEPS'], name="Steps", marker_color='rgba(255, 75, 75, 0.3)', yaxis='y2'))
+        fig_dual.update_layout(
+            template="plotly_dark", yaxis2=dict(overlaying='y', side='right', showgrid=False),
+            legend=dict(orientation="h"), height=400
+        )
+        st.plotly_chart(fig_dual, use_container_width=True)
 
     with t2:
-        st.subheader("InBody Decisive Data")
+        st.subheader("Master Composition Analysis")
+        # Combined InBody Metrics
         if not ib_v.empty:
-            col_a, col_b = st.columns(2)
-            bf_col = next((c for c in ib_v.columns if 'BF%' in c or 'FAT' in c.upper()), None)
-            mm_col = next((c for c in ib_v.columns if 'MUSCLE' in c.upper()), None)
-            
-            if bf_col:
-                with col_a: build_chart(ib_v, i_date, bf_col, "Body Fat %", "#FF4B4B")
-            if mm_col:
-                with col_b: build_chart(ib_v, i_date, mm_col, "Muscle Mass (kg)", "#00FFAA")
+            bf_col = next((c for c in ib_v.columns if 'BF%' in c or 'FAT' in c.upper()), 'BF%')
+            mm_col = next((c for c in ib_v.columns if 'MUSCLE' in c.upper()), 'MUSCLE MASS')
+            build_combined_chart(ib_v, i_date, [bf_col, mm_col], "Body Fat % vs Muscle Mass Trend", time_choice)
         else:
-            st.info("No InBody data found. Confirm your InBody GID is correct.")
+            st.info("Syncing InBody data...")
 
     with t3:
+        st.subheader("Master Recovery Intelligence")
         if not ou_v.empty:
-            hrv_col = next((c for c in ou_v.columns if 'HRV' in c.upper()), None)
-            slp_col = next((c for c in ou_v.columns if 'SLEEP' in c.upper() and 'SCORE' in c.upper()), None)
-            if hrv_col: build_chart(ou_v, o_date, hrv_col, "HRV (ms)", "#00ffcc")
-            if slp_col: build_chart(ou_v, o_date, slp_col, "Sleep Score", "#9C27B0")
-        else: st.warning("Oura data missing.")
+            # Amalgamated Oura Chart
+            build_combined_chart(ou_v, o_date, ['readiness_score', 'score_sleep', 'average_hrv'], "Combined Readiness, Sleep & HRV", time_choice)
+            
+            st.divider()
+            col_a, col_b = st.columns(2)
+            with col_a:
+                # Resting Heart Rate (Decisive)
+                fig_rhr = go.Figure(go.Scatter(x=ou_v[o_date], y=ou_v['rest_heart_rate'], name="RHR", line=dict(color='#FF4B4B', shape='spline')))
+                fig_rhr.update_layout(template="plotly_dark", title="Resting Heart Rate (Lower is better)", height=300)
+                st.plotly_chart(fig_rhr, use_container_width=True)
+            with col_b:
+                # Respiratory Rate (Decisive for illness/fatigue)
+                fig_rr = go.Figure(go.Scatter(x=ou_v[o_date], y=ou_v['respiratory_rate'], name="Resp Rate", line=dict(color='#00FFAA', shape='spline')))
+                fig_rr.update_layout(template="plotly_dark", title="Respiratory Rate (Stability check)", height=300)
+                st.plotly_chart(fig_rr, use_container_width=True)
 
     with t4:
-        st.subheader("Master Performance Timeline")
-        build_chart(df_v, t_date, 'STEPS', "Steps", "#FF4B4B", is_bar=True)
+        st.subheader("Master Performance Correlation")
+        # All decisive data points
         if not ou_v.empty:
-            hrv_tl = next((c for c in ou_v.columns if 'HRV' in c.upper()), None)
-            if hrv_tl: build_chart(ou_v, o_date, hrv_tl, "Recovery (HRV)", "#00ffcc")
-        build_chart(df_v, t_date, 'BODYWEIGHT (kg)', "Weight (kg)", "#00ffcc", show_avg=True)
+            # Merge Oura and Tracker for a single 'Correlation' chart
+            merged = pd.merge(df_v[[t_date, 'STEPS', 'BODYWEIGHT (kg)']], 
+                              ou_v[[o_date, 'readiness_score', 'average_hrv']], 
+                              left_on=t_date, right_on=o_date, how='inner')
+            
+            build_combined_chart(merged, t_date, ['STEPS', 'average_hrv', 'readiness_score'], "Activity vs Biological Recovery", time_choice)
+        
+        st.divider()
+        st.write("📈 **Expert Note:** Use this tab to see if higher step days are causing a drop in HRV/Readiness 24-48 hours later.")
 
 except Exception as e:
-    st.error(f"Syncing... Error: {e}")
+    st.error(f"Syncing... Ensure column names match and GIDs are current. Error: {e}")
