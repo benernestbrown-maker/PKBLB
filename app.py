@@ -1,32 +1,31 @@
 import streamlit as st
 import pandas as pd
 import plotly.graph_objects as go
-from datetime import datetime
+from datetime import datetime, timedelta
 
-# 1. Expert UI Configuration
-st.set_page_config(page_title="Ben's Performance Command Centre", layout="wide")
+# 1. Dashboard Architecture
+st.set_page_config(page_title="Ben's Performance Hub", layout="wide")
 
 st.markdown("""
     <style>
     .main { background-color: #0e1117; }
     div[data-testid="stMetricValue"] { color: #00ffcc; font-size: 2.2rem; font-weight: 800; }
-    .stPlotlyChart { border: 1px solid #30363d; border-radius: 10px; }
+    .stPlotlyChart { border: 1px solid #30363d; border-radius: 8px; padding: 10px; }
     </style>
     """, unsafe_allow_html=True)
 
-# 2. Data Engine
 CSV_URL = "https://docs.google.com/spreadsheets/d/e/2PACX-1vRcgV5PFrp4XmAcNn3cutN0PvxKoZGhTY8wc8NKp70wDdajdsrYPOfNWezEBCoX-wSJyGtHSDDMyqse/pub?output=csv"
 
 @st.cache_data(ttl=60)
-def load_and_refine_data():
-    # Load Daily Tracker (Skip the spreadsheet headers)
+def get_clean_data():
     df = pd.read_csv(CSV_URL, skiprows=4)
     df.columns = [str(c).replace('\n', ' ').strip() for c in df.columns]
     
-    # Filter only rows that have a valid date and drop "future" placeholder rows
+    # Convert DATE to actual datetime objects
+    df['DATE'] = pd.to_datetime(df['DATE'], dayfirst=True, errors='coerce')
     df = df.dropna(subset=['DATE'])
     
-    # Convert all training metrics to numeric, handling commas and strings
+    # Define metrics and clean numeric data
     metrics = {
         'Weight': 'BODYWEIGHT (kg)',
         'Steps': 'STEPS',
@@ -34,95 +33,84 @@ def load_and_refine_data():
         'Sleep': 'SLEEP QUALITY Sleep Score OR Scale 1-10',
         'Stress': 'STRESS LEVELS Scale 1-10'
     }
+    for col in metrics.values():
+        df[col] = pd.to_numeric(df[col].astype(str).str.replace(',', ''), errors='coerce')
     
-    for key, col in metrics.items():
-        if col in df.columns:
-            df[col] = pd.to_numeric(df[col].astype(str).str.replace(',', ''), errors='coerce')
-    
+    # CRITICAL: Filter out any data from the future to stop the 'scribble'
+    df = df[df['DATE'] <= datetime.now()]
     return df, metrics
 
-def build_pro_chart(df, col_name, title, color, chart_type="line"):
-    # Clean data specifically for this chart to avoid "gaps" or zero-drops
-    plot_df = df.dropna(subset=[col_name])
-    if plot_df.empty: return None
+def render_chart(df, col, title, color, timeframe_label):
+    if df[col].dropna().empty: return
     
     fig = go.Figure()
-    if chart_type == "bar":
-        fig.add_trace(go.Bar(x=plot_df['DATE'], y=plot_df[col_name], marker_color=color, name=title))
-    else:
-        fig.add_trace(go.Scatter(x=plot_df['DATE'], y=plot_df[col_name], 
-                                 line=dict(color=color, width=4, shape='spline'),
-                                 mode='lines+markers', marker=dict(size=6)))
+    fig.add_trace(go.Scatter(
+        x=df['DATE'], y=df[col],
+        name=title, line=dict(color=color, width=3, shape='spline'),
+        mode='lines+markers', marker=dict(size=6)
+    ))
     
     fig.update_layout(
-        template="plotly_dark", title=f"<b>{title}</b>",
-        height=300, margin=dict(l=10, r=10, t=40, b=10),
-        hovermode="x unified", showlegend=False
+        template="plotly_dark", title=f"<b>{title} - {timeframe_label}</b>",
+        height=350, margin=dict(l=10, r=10, t=40, b=10),
+        hovermode="x unified", showlegend=False,
+        xaxis=dict(showgrid=False), yaxis=dict(gridcolor='rgba(255,255,255,0.05)')
     )
-    return fig
+    st.plotly_chart(fig, use_container_width=True)
 
 try:
-    df, metrics = load_and_refine_data()
+    full_df, metrics = get_clean_data()
     
-    st.title("⚡ BEN'S PERFORMANCE COMMAND CENTRE")
+    # --- SIDEBAR: INTELLIGENT NAVIGATION ---
+    st.sidebar.title("🎛️ Controls")
+    time_filter = st.sidebar.selectbox(
+        "Select Timeframe", 
+        ["Week", "Month", "3 Months", "6 Months", "12 Months", "All Time"]
+    )
     
-    # --- SECTION 1: TODAY'S VITALS ---
-    latest = df.dropna(subset=[metrics['Weight']]).iloc[-1]
-    m1, m2, m3, m4, m5 = st.columns(5)
+    # Logic for Date Filtering
+    end_date = full_df['DATE'].max()
+    if time_filter == "Week": start_date = end_date - timedelta(days=7)
+    elif time_filter == "Month": start_date = end_date - timedelta(days=30)
+    elif time_filter == "3 Months": start_date = end_date - timedelta(days=90)
+    elif time_filter == "6 Months": start_date = end_date - timedelta(days=180)
+    elif time_filter == "12 Months": start_date = end_date - timedelta(days=365)
+    else: start_date = full_df['DATE'].min()
+
+    df = full_df[(full_df['DATE'] >= start_date) & (full_df['DATE'] <= end_date)]
+
+    # --- TOP SECTION: KPI HUD ---
+    latest = full_df.dropna(subset=[metrics['Weight']]).iloc[-1]
+    st.title("⚡ PERFORMANCE COMMAND CENTRE")
     
-    m1.metric("Weight", f"{latest[metrics['Weight']]}kg")
-    
-    curr_steps = int(latest[metrics['Steps']]) if not pd.isna(latest[metrics['Steps']]) else 0
-    m2.metric("Steps", f"{curr_steps:,}", f"{curr_steps - 12500} vs Goal")
-    
-    m3.metric("Energy", f"{latest[metrics['Energy']]}/10")
-    m4.metric("Sleep", f"{latest[metrics['Sleep']]}")
-    m5.metric("Stress", f"{latest[metrics['Stress']]}/10")
+    c1, c2, c3, c4 = st.columns(4)
+    c1.metric("Current Weight", f"{latest[metrics['Weight']]} kg")
+    c2.metric("Daily Steps", f"{int(latest[metrics['Steps']]):,}")
+    c3.metric("Energy Status", f"{latest[metrics['Energy']]}/10")
+    c4.metric("Sleep Marker", f"{latest[metrics['Sleep']]}")
 
     st.divider()
 
-    # --- SECTION 2: THE DATA GRID (No more busy charts) ---
-    col_left, col_right = st.columns(2)
+    # --- MAIN VIEW: ISOLATED METRICS ---
+    tab1, tab2, tab3 = st.tabs(["📉 Body Composition", "🏃 Activity & Cardio", "😴 Biofeedback"])
 
-    with col_left:
-        # Weight Graph
-        w_fig = build_pro_chart(df, metrics['Weight'], "Bodyweight Trend (kg)", "#00ffcc")
-        if w_fig: st.plotly_chart(w_fig, use_container_width=True)
+    with tab1:
+        render_chart(df, metrics['Weight'], "Bodyweight Trend", "#00ffcc", time_filter)
         
-        # Energy Graph
-        e_fig = build_pro_chart(df, metrics['Energy'], "Daily Energy Levels", "#FFEB3B")
-        if e_fig: st.plotly_chart(e_fig, use_container_width=True)
+    with tab2:
+        render_chart(df, metrics['Steps'], "Step Activity", "#FF4B4B", time_filter)
+        
+    with tab3:
+        e_col, s_col = st.columns(2)
+        with e_col: render_chart(df, metrics['Energy'], "Energy Levels", "#FFEB3B", time_filter)
+        with s_col: render_chart(df, metrics['Stress'], "Stress Markers", "#FF9800", time_filter)
 
-    with col_right:
-        # Steps Graph with Goal Line
-        s_fig = build_pro_chart(df, metrics['Steps'], "Daily Step Activity", "#FF4B4B", "bar")
-        if s_fig:
-            s_fig.add_hline(y=12500, line_dash="dash", line_color="white", annotation_text="12.5k Goal")
-            st.plotly_chart(s_fig, use_container_width=True)
-            
-        # Stress Graph
-        st_fig = build_pro_chart(df, metrics['Stress'], "Stress Markers", "#FF9800")
-        if st_fig: st.plotly_chart(st_fig, use_container_width=True)
-
-    # --- SECTION 3: COACHING & RECOVERY BITS ---
+    # --- PT LOG ---
     st.divider()
-    c_a, c_b = st.columns(2)
-    
-    with c_a:
-        st.subheader("📝 Daily PT Feedback")
+    with st.expander("📝 Latest Daily Comments"):
         notes = df.dropna(subset=['DAILY COMMENTS']).tail(5)
         for _, row in notes.iterrows():
-            st.info(f"**{row['DATE']}**: {row['DAILY COMMENTS']}")
-
-    with c_b:
-        st.subheader("💡 Expert Recommendations")
-        # Personalised logic based on your home setup
-        if latest[metrics['Stress']] > 7:
-            st.warning("⚠️ Stress is high. Allocate 15 mins for the **Shakti Mat** tonight.")
-        if latest[metrics['Energy']] < 5:
-            st.error("📉 Low Energy detected. PT Note: Check 'Ultra' Baked Oats—ensure +20ml milk to fix the dryness.")
-        else:
-            st.success("✅ Metrics looking stable. Maintain current training volume.")
+            st.info(f"**{row['DATE'].strftime('%d %b')}:** {row['DAILY COMMENTS']}")
 
 except Exception as e:
-    st.error(f"Waiting for your sheet to sync... (Ensure Daily Tracker is tab 1). Error: {e}")
+    st.error(f"Intelligence Module Offline: {e}")
